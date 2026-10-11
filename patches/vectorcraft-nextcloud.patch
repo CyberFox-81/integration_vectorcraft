@@ -1,5 +1,5 @@
 diff --git a/apps/vectorcraft-web/Cargo.toml b/apps/vectorcraft-web/Cargo.toml
-index 811b937..3e258c4 100644
+index 811b937a..3e258c41 100644
 --- a/apps/vectorcraft-web/Cargo.toml
 +++ b/apps/vectorcraft-web/Cargo.toml
 @@ -28,4 +28,4 @@ rfd = { workspace = true }
@@ -10,7 +10,7 @@ index 811b937..3e258c4 100644
 +web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlIFrameElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "ClipboardEvent", "DataTransfer", "File", "FileList", "Url", "Location", "CssStyleDeclaration", "Event", "EventTarget", "MouseEvent", "DragEvent", "Storage", "Navigator", "RequestInit", "Response", "AbortController", "AbortSignal", "MessageEvent"] }
 diff --git a/apps/vectorcraft-web/src/host.rs b/apps/vectorcraft-web/src/host.rs
 new file mode 100644
-index 0000000..f2b5cab
+index 00000000..f2b5cab6
 --- /dev/null
 +++ b/apps/vectorcraft-web/src/host.rs
 @@ -0,0 +1,136 @@
@@ -151,7 +151,7 @@ index 0000000..f2b5cab
 +    }
 +}
 diff --git a/apps/vectorcraft-web/src/main.rs b/apps/vectorcraft-web/src/main.rs
-index fdf4199..c6ad5e7 100644
+index fdf41991..c6ad5e79 100644
 --- a/apps/vectorcraft-web/src/main.rs
 +++ b/apps/vectorcraft-web/src/main.rs
 @@ -12,11 +12,15 @@
@@ -172,7 +172,7 @@ index fdf4199..c6ad5e7 100644
  #[cfg(target_arch = "wasm32")]
  mod web;
 diff --git a/apps/vectorcraft-web/src/web.rs b/apps/vectorcraft-web/src/web.rs
-index b9ca143..ebf4e2e 100644
+index ba2e697f..5be3508f 100644
 --- a/apps/vectorcraft-web/src/web.rs
 +++ b/apps/vectorcraft-web/src/web.rs
 @@ -52,6 +52,8 @@ struct Host {
@@ -253,7 +253,7 @@ index b9ca143..ebf4e2e 100644
          (Err(e), Some(kept)) => {
              log::error!("vectorcraft-web: couldn't restart the graphics: {}", js_err(e));
              give_up(slot.borrow_mut().take(), kept);
-@@ -387,6 +415,9 @@ impl eframe::App for WebShell {
+@@ -388,6 +416,9 @@ impl eframe::App for WebShell {
      fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
          if let Some(app) = &mut self.app {
              app.ui(ui);
