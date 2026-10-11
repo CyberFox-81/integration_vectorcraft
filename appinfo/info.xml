@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<!--
+  - SPDX-FileCopyrightText: 2026 Britton Couchman <brittondcouchman@gmail.com>
+  - SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+	<id>integration_vectorcraft</id>
+	<name>VectorCraft integration</name>
+	<summary>Edit SVG and Illustrator files in Nextcloud with VectorCraft</summary>
+	<description><![CDATA[Open an SVG, Illustrator (.ai), EPS or VectorCraft file in Files with **Edit in VectorCraft** and work on it right in the browser: the pen and shape tools, Pathfinder, gradients and patterns, type on a path, artboards, symbols and layers.
+
+- **Save** writes the drawing straight back to Nextcloud in its own format, and Nextcloud keeps the previous state as a file version.
+- **Save As**, **Save a Copy** and **Export** (PDF, PNG, JPEG, WebP, SVG…) store a file in any folder you pick.
+- Read-only files open normally; saving offers a copy.
+- If someone else changes the file while you have it open, you choose whether to replace their version or save a copy.
+- Optionally, clicking a drawing in Files opens it in VectorCraft.
+
+VectorCraft runs entirely in your browser as WebAssembly. Files go only between your browser and your Nextcloud, and the server needs no extra software.
+
+This is a community integration based on [VectorCraft](https://github.com/storytold/vectorcraft) by the ArtCraft team, an open-source, Rust-native vector illustration app. It embeds a build of VectorCraft and is not made or endorsed by the ArtCraft team.
+
+**Requirements:** a browser with WebGPU or WebGL2, and a web server that serves `.wasm` files as `application/wasm` (Nextcloud's own Apache and nginx configurations do).]]></description>
+	<version>0.1.0</version>
+	<licence>agpl</licence>
+	<author mail="brittondcouchman@gmail.com" homepage="https://github.com/CyberFox-81">Britton Couchman</author>
+	<namespace>VectorCraftIntegration</namespace>
+	<category>multimedia</category>
+	<category>files</category>
+	<category>integration</category>
+	<website>https://github.com/CyberFox-81/integration_vectorcraft</website>
+	<bugs>https://github.com/CyberFox-81/integration_vectorcraft/issues</bugs>
+	<repository type="git">https://github.com/CyberFox-81/integration_vectorcraft.git</repository>
+	<dependencies>
+		<nextcloud min-version="33" max-version="35"/>
+	</dependencies>
+</info>
