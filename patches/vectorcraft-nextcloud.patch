@@ -10,24 +10,28 @@ index 811b937a..3e258c41 100644
 +web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlIFrameElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "ClipboardEvent", "DataTransfer", "File", "FileList", "Url", "Location", "CssStyleDeclaration", "Event", "EventTarget", "MouseEvent", "DragEvent", "Storage", "Navigator", "RequestInit", "Response", "AbortController", "AbortSignal", "MessageEvent"] }
 diff --git a/apps/vectorcraft-web/src/host.rs b/apps/vectorcraft-web/src/host.rs
 new file mode 100644
-index 00000000..f2b5cab6
+index 00000000..e1f84418
 --- /dev/null
 +++ b/apps/vectorcraft-web/src/host.rs
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,146 @@
 +//! The `postMessage` bridge to a same-origin parent page (`?host=parent`), for pages that embed
-+//! VectorCraft in an `<iframe>` (such as a Nextcloud app). Messages are plain objects with a `type`:
++//! VectorCraft in an `<iframe>` (such as a Nextcloud app). The protocol is described for host
++//! authors in `docs/web-embed.md`; its rules are in `protocol` (tested natively). Messages are plain
++//! objects with a `type`:
 +//!
 +//! - `vectorcraft:ready` (to the parent): `{ version }`, the app is listening; send a file now.
 +//! - `vectorcraft:open` (from the parent): `{ name, bytes }`, bytes an `ArrayBuffer` or
-+//!   `Uint8Array`. It opens like a file picked with File › Open.
++//!   `Uint8Array`. It opens like a file picked with File › Open. Without a `name` or `bytes` it is
++//!   refused with `vectorcraft:failed`.
 +//! - `vectorcraft:save` (to the parent): `{ name, bytes }` (a transferred `ArrayBuffer`) for every
 +//!   file VectorCraft would otherwise download (`Services::download`): Save, Save As, Save a
 +//!   Copy and exports. The parent stores it and reports failures itself.
 +//! - `vectorcraft:dirty` (to the parent): `{ dirty }` whenever unsaved changes appear or go away.
-+//! - `vectorcraft:failed` (to the parent): `{ error }` when the app couldn't start.
++//! - `vectorcraft:failed` (to the parent): `{ error }`. Before `ready`, the app couldn't start;
++//!   after it, the last `vectorcraft:open` was refused (the app keeps running).
 +//!
-+//! Only the parent window on the page's own origin is heard or answered. The parent guards leaving
-+//! the page with unsaved changes.
++//! Only the parent window on the page's own origin is heard or answered, and a page with an opaque
++//! origin (`null`) has no bridge. The parent guards leaving the page with unsaved changes.
 +
 +use std::cell::Cell;
 +use std::rc::Rc;
@@ -37,6 +41,8 @@ index 00000000..f2b5cab6
 +use wasm_bindgen::JsCast as _;
 +use wasm_bindgen::JsValue;
 +use wasm_bindgen::closure::Closure;
++
++use crate::protocol;
 +
 +type Inbox = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 +
@@ -57,7 +63,7 @@ index 00000000..f2b5cab6
 +        if js_sys::Object::is(&parent, &window) {
 +            return None;
 +        }
-+        let origin = window.location().origin().ok()?;
++        let origin = window.location().origin().ok().filter(|o| !protocol::is_opaque(o))?;
 +        Some(Self { window, parent, origin, reported: Rc::default() })
 +    }
 +
@@ -98,22 +104,26 @@ index 00000000..f2b5cab6
 +    }
 +
 +    /// Hear files from the parent: they go to the open inbox, which outlives graphics restarts.
-+    /// `wake` asks the current runner for a frame.
++    /// `wake` asks the current runner for a frame. A `vectorcraft:open` that can't be opened is
++    /// answered with `vectorcraft:failed`; every other message is ignored (`protocol::accepts`).
 +    pub fn listen(&self, inbox: Inbox, wake: impl Fn() + 'static) {
-+        let parent = self.parent.clone();
-+        let origin = self.origin.clone();
++        let bridge = self.clone();
 +        let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
-+            if event.origin() != origin || !event.source().is_some_and(|s| js_sys::Object::is(&s, &parent)) {
-+                return;
-+            }
++            let from_parent = event.source().is_some_and(|s| js_sys::Object::is(&s, &bridge.parent));
 +            let data = event.data();
-+            if string(&data, "type").as_deref() != Some("vectorcraft:open") {
++            if !protocol::accepts(&bridge.origin, &event.origin(), from_parent, string(&data, "type").as_deref()) {
 +                return;
 +            }
-+            let name = string(&data, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Artwork.svg".to_string());
-+            let Some(bytes) = bytes(&data) else { return };
-+            inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
-+            wake();
++            match protocol::open(string(&data, "name"), bytes(&data)) {
++                Ok(open) => {
++                    inbox.lock().unwrap_or_else(|e| e.into_inner()).push((open.name, open.bytes));
++                    wake();
++                }
++                Err(error) => {
++                    log::warn!("refused a file from the page: {error}");
++                    bridge.post_failed(&error);
++                }
++            }
 +        });
 +        if self.window.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref()).is_ok() {
 +            // The listener lives as long as the page.
@@ -151,17 +161,18 @@ index 00000000..f2b5cab6
 +    }
 +}
 diff --git a/apps/vectorcraft-web/src/main.rs b/apps/vectorcraft-web/src/main.rs
-index fdf41991..c6ad5e79 100644
+index fdf41991..7eaf11b7 100644
 --- a/apps/vectorcraft-web/src/main.rs
 +++ b/apps/vectorcraft-web/src/main.rs
-@@ -12,11 +12,15 @@
+@@ -12,12 +12,19 @@
  //! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
  //!
  //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?lang=es` (any
 -//! language code) stands in for the browser's languages when the interface language is Automatic.
 +//! language code) stands in for the browser's languages when the interface language is Automatic;
 +//! `?host=parent` (inside an `<iframe>`) talks to a same-origin parent page instead of
-+//! downloading: it sends the files to open and stores what VectorCraft saves (`host`).
++//! downloading: it sends the files to open and stores what VectorCraft saves (`host`; protocol:
++//! `docs/web-embed.md`).
  
  #[cfg(target_arch = "wasm32")]
  mod fonts;
@@ -169,10 +180,137 @@ index fdf41991..c6ad5e79 100644
 +mod host;
 +#[cfg(target_arch = "wasm32")]
  mod locks;
++#[cfg(any(target_arch = "wasm32", test))]
++mod protocol;
  #[cfg(target_arch = "wasm32")]
  mod web;
+ 
+diff --git a/apps/vectorcraft-web/src/protocol.rs b/apps/vectorcraft-web/src/protocol.rs
+new file mode 100644
+index 00000000..23fc872d
+--- /dev/null
++++ b/apps/vectorcraft-web/src/protocol.rs
+@@ -0,0 +1,118 @@
++//! The rules of the embedding protocol (`host`, `docs/web-embed.md`), kept free of browser types so
++//! they are tested natively: which messages the bridge reads, and what a `vectorcraft:open` must
++//! carry.
++
++/// What a `vectorcraft:open` delivers: a file to open like one picked with File › Open.
++#[derive(Debug, PartialEq, Eq)]
++pub struct Open {
++    /// The file name: the document's name, and the name it is saved under.
++    pub name: String,
++    pub bytes: Vec<u8>,
++}
++
++/// Whether the bridge reads a message at all: a `vectorcraft:open` from the parent window, on the
++/// page's own origin. Anything else is ignored without a reply, so another page learns nothing.
++///
++/// `own_origin` is the page's origin and `origin` the event's; `from_parent` says whether the
++/// event's source is the parent window; `kind` is the message's `type`, when it is a string. An
++/// opaque origin (`"null"`: a sandboxed frame, a `file:` page) can't be told apart from another
++/// page's, so the bridge hears nothing there.
++pub fn accepts(own_origin: &str, origin: &str, from_parent: bool, kind: Option<&str>) -> bool {
++    from_parent && !is_opaque(own_origin) && origin == own_origin && kind == Some("vectorcraft:open")
++}
++
++/// An origin that names no site (`"null"`).
++pub fn is_opaque(origin: &str) -> bool {
++    origin.is_empty() || origin == "null"
++}
++
++/// Check a `vectorcraft:open` the bridge accepted: it needs a file name and the file's bytes (an
++/// empty file is passed on: opening it reports the problem like any unreadable file). The error is
++/// the text of the `vectorcraft:failed` reply.
++pub fn open(name: Option<String>, bytes: Option<Vec<u8>>) -> Result<Open, String> {
++    let Some(name) = name.filter(|n| !n.trim().is_empty()) else {
++        return Err("vectorcraft:open needs the file's name (`name`, a non-empty string)".to_string());
++    };
++    let Some(bytes) = bytes else {
++        return Err(format!("vectorcraft:open of {name} needs the file's contents (`bytes`, an ArrayBuffer or Uint8Array)"));
++    };
++    Ok(Open { name, bytes })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    const SITE: &str = "https://cloud.example.com";
++    const OPEN: Option<&str> = Some("vectorcraft:open");
++
++    #[test]
++    fn accepts_an_open_from_the_parent_on_the_same_origin() {
++        assert!(accepts(SITE, SITE, true, OPEN));
++    }
++
++    #[test]
++    fn ignores_messages_from_another_origin() {
++        for origin in [
++            "https://evil.example",
++            "http://cloud.example.com",
++            "https://cloud.example.com:8443",
++            "https://cloud.example.com.evil.example",
++            "https://sub.cloud.example.com",
++            "null",
++            "",
++        ] {
++            assert!(!accepts(SITE, origin, true, OPEN), "{origin}");
++        }
++    }
++
++    #[test]
++    fn ignores_another_window_on_the_same_origin() {
++        // Such as another tab of the same site, or a frame the parent page holds.
++        assert!(!accepts(SITE, SITE, false, OPEN));
++    }
++
++    #[test]
++    fn ignores_other_message_types() {
++        for kind in [
++            None,
++            Some(""),
++            Some("vectorcraft:save"),
++            Some("vectorcraft:ready"),
++            Some("VECTORCRAFT:OPEN"),
++            Some("photocraft:open"),
++            Some("vectorcraft:open "),
++        ] {
++            assert!(!accepts(SITE, SITE, true, kind), "{kind:?}");
++        }
++    }
++
++    #[test]
++    fn hears_nothing_on_an_opaque_origin() {
++        assert!(!accepts("null", "null", true, OPEN));
++        assert!(!accepts("", "", true, OPEN));
++        assert!(is_opaque("null"));
++        assert!(!is_opaque(SITE));
++    }
++
++    #[test]
++    fn opens_a_named_file() {
++        assert_eq!(open(Some("Logo.svg".into()), Some(b"<svg/>".to_vec())), Ok(Open { name: "Logo.svg".into(), bytes: b"<svg/>".to_vec() }));
++        // An empty file is the importer's to report.
++        assert_eq!(open(Some("Empty.svg".into()), Some(Vec::new())), Ok(Open { name: "Empty.svg".into(), bytes: Vec::new() }));
++    }
++
++    #[test]
++    fn refuses_an_open_without_a_name() {
++        for name in [None, Some(String::new()), Some("   ".to_string()), Some("\t\n".to_string())] {
++            let error = open(name.clone(), Some(b"<svg/>".to_vec())).err();
++            assert!(error.as_deref().is_some_and(|e| e.contains("`name`")), "{name:?}: {error:?}");
++        }
++    }
++
++    #[test]
++    fn refuses_an_open_without_bytes() {
++        let error = open(Some("Logo.svg".into()), None).err();
++        assert!(error.as_deref().is_some_and(|e| e.contains("`bytes`") && e.contains("Logo.svg")), "{error:?}");
++    }
++}
 diff --git a/apps/vectorcraft-web/src/web.rs b/apps/vectorcraft-web/src/web.rs
-index ba2e697f..5be3508f 100644
+index 50028187..90815b5b 100644
 --- a/apps/vectorcraft-web/src/web.rs
 +++ b/apps/vectorcraft-web/src/web.rs
 @@ -52,6 +52,8 @@ struct Host {
@@ -253,7 +391,7 @@ index ba2e697f..5be3508f 100644
          (Err(e), Some(kept)) => {
              log::error!("vectorcraft-web: couldn't restart the graphics: {}", js_err(e));
              give_up(slot.borrow_mut().take(), kept);
-@@ -388,6 +416,9 @@ impl eframe::App for WebShell {
+@@ -389,6 +417,9 @@ impl eframe::App for WebShell {
      fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
          if let Some(app) = &mut self.app {
              app.ui(ui);
@@ -263,3 +401,109 @@ index ba2e697f..5be3508f 100644
          }
      }
  }
+diff --git a/docs/development.md b/docs/development.md
+index 6bd3d391..51859779 100644
+--- a/docs/development.md
++++ b/docs/development.md
+@@ -21,7 +21,7 @@ craft-fonts checkout adds the fonts the site serves beside the wasm: Trunk's `po
+ 
+ Any static file server works for `dist/web`, for example `python3 -m http.server 8766` inside that directory. The release `.wasm` is about 17.5 MB, or 7.1 MB gzipped, so serve it with compression.
+ 
+-URL flag: `?webgl` forces the WebGL2 backend.
++URL flags: `?webgl` forces the WebGL2 backend; `?host=parent` lets a same-origin page that frames the app open files in it and store what it saves ([Embedding the web build](web-embed.md)).
+ 
+ How the web shell (`apps/vectorcraft-web/src/web.rs`) differs from desktop:
+ 
+diff --git a/docs/web-embed.md b/docs/web-embed.md
+new file mode 100644
+index 00000000..e5d831ea
+--- /dev/null
++++ b/docs/web-embed.md
+@@ -0,0 +1,87 @@
++# Embedding the web build
++
++A page on the same site can run VectorCraft's web build (`apps/vectorcraft-web`) in an `<iframe>`, hand it a file to open, and store what it saves instead of letting the browser download it. A file manager's "Edit in VectorCraft" (such as a Nextcloud app) is the intended use. The page talks to VectorCraft with `postMessage`. Code: `apps/vectorcraft-web/src/host.rs` (the bridge) and `src/protocol.rs` (its rules, tested natively).
++
++## Turning it on
++
++Load the web build with `?host=parent` in a frame on the **same origin** as the page:
++
++```html
++<iframe id="vectorcraft" src="/vectorcraft/index.html?host=parent"></iframe>
++```
++
++Without `?host=parent`, or when the page isn't framed, nothing changes: no listener is installed and saves download as usual. A page with an opaque origin (a sandboxed frame without `allow-same-origin`, a `file:` page) gets no bridge either.
++
++What changes in host mode:
++
++- Everything VectorCraft would download goes to the parent as `vectorcraft:save` instead: Save, Save As, Save a Copy and the exports. There is still no save panel, so the parent decides where each file goes.
++- The parent is told when unsaved changes appear or go away (`vectorcraft:dirty`). VectorCraft doesn't ask before the page is left; guarding that is the parent's job.
++
++## Messages
++
++Every message is a plain object with a string `type`. VectorCraft posts only to `window.parent`, with its own origin as the target origin.
++
++| `type` | Direction | Fields | Meaning |
++|---|---|---|---|
++| `vectorcraft:ready` | to the parent | `version` (string) | The app is running and listening. Send the file now. |
++| `vectorcraft:open` | from the parent | `name` (string), `bytes` (`ArrayBuffer` or `Uint8Array`) | Open this file, as if it were picked with File › Open. |
++| `vectorcraft:save` | to the parent | `name` (string), `bytes` (`ArrayBuffer`, transferred) | Store this file. |
++| `vectorcraft:dirty` | to the parent | `dirty` (boolean) | Unsaved changes appeared (`true`) or went away (`false`). |
++| `vectorcraft:failed` | to the parent | `error` (string) | Before `ready`: the app couldn't start. After `ready`: the last `vectorcraft:open` was refused; the app keeps running. |
++
++**`vectorcraft:ready`** comes once, when the app has started. `version` is the app's version (`CARGO_PKG_VERSION`). A host that has heard neither `ready` nor `failed` after a reasonable time should assume the app couldn't start. The commonest reason is a browser without WebGPU or WebGL2.
++
++**`vectorcraft:open`** needs both fields:
++
++- `name` is the file's name, such as `Logo.svg`. Its extension decides how the file is read, as for a picked file, so anything File › Open reads can be sent. It also becomes the document's name, which saves are named after.
++- `bytes` is the file's contents. The buffer may be transferred.
++- A message without a non-empty `name`, or without `bytes` of one of those two types, is refused: VectorCraft answers `vectorcraft:failed` and opens nothing.
++- A file that has both but can't be read (an empty or damaged file) is reported inside the app, like any file that fails to open.
++
++**`vectorcraft:save`**: `name` is a bare file name with no folders, the name a download would have had. The parent stores the file and reports any failure to the user itself; nothing is sent back. VectorCraft treats the save as done, as it does a download: after Save or Save As the document counts as saved, and `dirty: false` follows.
++
++**`vectorcraft:dirty`** is sent after the first frame and then whenever the answer changes, so the first one is usually `dirty: false`. `true` means at least one open document has unsaved changes.
++
++## Who is heard
++
++The bridge reads a message only when all of these hold:
++
++1. it comes from `window.parent` (`event.source`), not from another window or frame on the site;
++2. its origin (`event.origin`) is exactly the page's own: same scheme, host and port;
++3. its `type` is `vectorcraft:open`.
++
++Anything else is ignored without a reply, so a page on another origin can neither open files in VectorCraft nor learn that it is there. Saves and other replies go only to `window.parent`, with the page's own origin as the target, so the browser delivers them to no other site. A same-origin parent can already script the frame directly, so the bridge gives it nothing it couldn't otherwise do; it only spares it reaching into the app's internals.
++
++## Compatibility
++
++Hosts should ignore message types and fields they don't know; VectorCraft does the same. `ready`'s `version` lets a host tell which build it is talking to.
++
++## Example host
++
++A minimal page (error handling left out) that opens a file it fetched and writes saves back next to it:
++
++```js
++const frame = document.getElementById('vectorcraft')
++window.addEventListener('message', async (event) => {
++  if (event.origin !== window.location.origin || event.source !== frame.contentWindow) return
++  const message = event.data
++  switch (message.type) {
++    case 'vectorcraft:ready': {
++      const bytes = await (await fetch('/files/Logo.svg')).arrayBuffer()
++      frame.contentWindow.postMessage({ type: 'vectorcraft:open', name: 'Logo.svg', bytes }, window.location.origin, [bytes])
++      break
++    }
++    case 'vectorcraft:save':
++      await fetch(`/files/${encodeURIComponent(message.name)}`, { method: 'PUT', body: message.bytes })
++      break
++    case 'vectorcraft:dirty':
++      unsaved = message.dirty
++      break
++    case 'vectorcraft:failed':
++      console.error('VectorCraft:', message.error)
++      break
++  }
++})
++let unsaved = false
++window.addEventListener('beforeunload', (event) => { if (unsaved) event.preventDefault() })
++```
