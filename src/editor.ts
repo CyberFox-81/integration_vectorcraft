@@ -69,7 +69,7 @@ let openByDefault = loadState<boolean>(APP, 'openByDefault', false)
  * Formats that keep the whole drawing. Saving in one of them can make that file the drawing's
  * file; anything else (PDF, PNG…) is an export, a copy that leaves the drawing where it is.
  */
-const DOCUMENT_EXTENSIONS = new Set(['.vectorcraft', '.drawcraft', '.svg', '.svgz', '.ai', '.ait', '.eps', '.pdf'])
+const DOCUMENT_EXTENSIONS = new Set<string>(['.vectorcraft', '.drawcraft', '.svg', '.svgz', '.ai', '.ait', '.eps', '.pdf'])
 
 /**
  * Where a plain Save goes, by the file name VectorCraft saves under: the opened file's name at

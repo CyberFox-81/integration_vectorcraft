@@ -23,7 +23,7 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VECTORCRAFT_REF="${VECTORCRAFT_REF:-1637165600a04cab576770d71332ad394d56c5e5}"
+VECTORCRAFT_REF="${VECTORCRAFT_REF:-60346d98b7352063c610ddcd977d0edd60bb0e23}"
 SRC="${1:-$APP_DIR/build/vectorcraft}"
 PATCH="$APP_DIR/patches/vectorcraft-nextcloud.patch"
 OUT="$APP_DIR/web"
@@ -35,9 +35,12 @@ if [ ! -e "$SRC/.git" ]; then
 fi
 
 if grep -rq 'vectorcraft:ready' "$SRC/apps/vectorcraft-web/src"; then
-	echo "bridge patch already applied"
-else
+	echo "VectorCraft has the embedding bridge"
+elif [ -s "$PATCH" ]; then
 	git -C "$SRC" apply "$PATCH"
+else
+	echo "error: this VectorCraft has no embedding bridge, and there is no patch to add it" >&2
+	exit 1
 fi
 
 cargo_args=(build --profile release -p vectorcraft-web --target wasm32-unknown-unknown)
