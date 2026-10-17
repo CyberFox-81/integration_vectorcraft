@@ -1,13 +1,13 @@
 diff --git a/apps/vectorcraft-web/Cargo.toml b/apps/vectorcraft-web/Cargo.toml
-index 811b937a..3e258c41 100644
+index 2e9218dc..c8f14778 100644
 --- a/apps/vectorcraft-web/Cargo.toml
 +++ b/apps/vectorcraft-web/Cargo.toml
 @@ -28,4 +28,4 @@ rfd = { workspace = true }
  wasm-bindgen = "0.2"
  wasm-bindgen-futures = "0.4"
  js-sys = "0.3"
--web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlIFrameElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "ClipboardEvent", "DataTransfer", "File", "FileList", "Url", "Location", "CssStyleDeclaration", "Event", "EventTarget", "MouseEvent", "DragEvent", "Storage", "Navigator", "RequestInit", "Response", "AbortController", "AbortSignal"] }
-+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlIFrameElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "ClipboardEvent", "DataTransfer", "File", "FileList", "Url", "Location", "CssStyleDeclaration", "Event", "EventTarget", "MouseEvent", "DragEvent", "Storage", "Navigator", "RequestInit", "Response", "AbortController", "AbortSignal", "MessageEvent"] }
+-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlIFrameElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "ClipboardEvent", "DataTransfer", "File", "FileList", "Url", "Location", "CssStyleDeclaration", "Event", "EventTarget", "MouseEvent", "PointerEvent", "TouchEvent", "AddEventListenerOptions", "DomRect", "DragEvent", "Storage", "Navigator", "RequestInit", "Response", "AbortController", "AbortSignal"] }
++web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlIFrameElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "ClipboardEvent", "DataTransfer", "File", "FileList", "Url", "Location", "CssStyleDeclaration", "Event", "EventTarget", "MouseEvent", "PointerEvent", "TouchEvent", "AddEventListenerOptions", "DomRect", "DragEvent", "Storage", "Navigator", "RequestInit", "Response", "AbortController", "AbortSignal", "MessageEvent"] }
 diff --git a/apps/vectorcraft-web/src/host.rs b/apps/vectorcraft-web/src/host.rs
 new file mode 100644
 index 00000000..6f4765dc
@@ -160,11 +160,11 @@ index 00000000..6f4765dc
 +    }
 +}
 diff --git a/apps/vectorcraft-web/src/main.rs b/apps/vectorcraft-web/src/main.rs
-index fdf41991..7eaf11b7 100644
+index 32cd1078..0b978eb0 100644
 --- a/apps/vectorcraft-web/src/main.rs
 +++ b/apps/vectorcraft-web/src/main.rs
-@@ -12,12 +12,19 @@
- //! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
+@@ -14,14 +14,21 @@
+ //!   hover, palm rejection, fingers navigate once a pen has been seen).
  //!
  //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?lang=es` (any
 -//! language code) stands in for the browser's languages when the interface language is Automatic.
@@ -179,6 +179,8 @@ index fdf41991..7eaf11b7 100644
 +mod host;
 +#[cfg(target_arch = "wasm32")]
  mod locks;
+ #[cfg(any(target_arch = "wasm32", test))]
+ mod pencil;
 +#[cfg(any(target_arch = "wasm32", test))]
 +mod protocol;
  #[cfg(target_arch = "wasm32")]
@@ -309,10 +311,10 @@ index 00000000..23fc872d
 +    }
 +}
 diff --git a/apps/vectorcraft-web/src/web.rs b/apps/vectorcraft-web/src/web.rs
-index 3be50e5f..6bbfd80d 100644
+index cfe8458b..634b18eb 100644
 --- a/apps/vectorcraft-web/src/web.rs
 +++ b/apps/vectorcraft-web/src/web.rs
-@@ -52,6 +52,8 @@ struct Host {
+@@ -55,6 +55,8 @@ struct Host {
      locks: Option<WebLocks>,
      /// Graphics restarts so far.
      restarts: u32,
@@ -321,8 +323,8 @@ index 3be50e5f..6bbfd80d 100644
  }
  
  pub fn start() {
-@@ -75,8 +77,19 @@ pub fn start() {
-             pasted: Rc::default(),
+@@ -79,8 +81,19 @@ pub fn start() {
+             pointers: SharedPointers::default(),
              locks,
              restarts: 0,
 +            // `?host=parent`: a same-origin page framing VectorCraft (such as a Nextcloud app)
@@ -341,15 +343,15 @@ index 3be50e5f..6bbfd80d 100644
          run(host, canvas, None).await;
      });
  }
-@@ -96,6 +109,7 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
-     // The app until the new runner takes it (still here if starting fails before).
+@@ -101,6 +114,7 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
      let slot = Rc::new(RefCell::new(moving.map(|m| m.app)));
      let (runner, taken, page) = (host.runner.clone(), slot.clone(), canvas.clone());
+     let (pointers, pen_canvas) = (host.pointers.clone(), canvas.clone());
 +    let bridge = host.bridge.clone();
      let result = runner
          .start(
              canvas,
-@@ -111,7 +125,10 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
+@@ -116,7 +130,10 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
                      rs.device.set_device_lost_callback(move |reason, msg| loss.report(&ctx, format!("{reason:?}: {msg}")));
                  }
                  host.pasted.borrow_mut().ctx = Some(ctx.clone());
@@ -361,7 +363,7 @@ index 3be50e5f..6bbfd80d 100644
                  let app = match taken.borrow_mut().take() {
                      Some(mut app) => {
                          // The old services asked the old context for frames.
-@@ -119,7 +136,12 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
+@@ -124,7 +141,12 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
                          app.status("The graphics were lost and have been restarted");
                          app
                      }
@@ -375,7 +377,7 @@ index 3be50e5f..6bbfd80d 100644
                  };
                  Ok(Box::new(WebShell { app: Some(app), host, canvas: page, loss }))
              }),
-@@ -131,7 +153,13 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
+@@ -139,7 +161,13 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
                  el.remove();
              }
          }
@@ -390,7 +392,7 @@ index 3be50e5f..6bbfd80d 100644
          (Err(e), Some(kept)) => {
              log::error!("vectorcraft-web: couldn't restart the graphics: {}", js_err(e));
              give_up(slot.borrow_mut().take(), kept);
-@@ -389,6 +417,9 @@ impl eframe::App for WebShell {
+@@ -398,6 +426,9 @@ impl eframe::App for WebShell {
      fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
          if let Some(app) = &mut self.app {
              app.ui(ui);
@@ -401,10 +403,10 @@ index 3be50e5f..6bbfd80d 100644
      }
  }
 diff --git a/docs/development.md b/docs/development.md
-index 0dbbf13b..84aeb506 100644
+index b7c14b39..4ffefa53 100644
 --- a/docs/development.md
 +++ b/docs/development.md
-@@ -23,7 +23,7 @@ craft-fonts checkout adds the fonts the site serves beside the wasm: Trunk's `po
+@@ -24,7 +24,7 @@ craft-fonts checkout adds the fonts the site serves beside the wasm: Trunk's `po
  
  Any static file server works for `dist/web`, for example `python3 -m http.server 8766` inside that directory. The release `.wasm` is about 17.5 MB, or 7.1 MB gzipped, so serve it with compression.
  

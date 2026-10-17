@@ -23,7 +23,7 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VECTORCRAFT_REF="${VECTORCRAFT_REF:-0a33cff3f6e2a1e9e672f4c3816f58cd8d3d032e}"
+VECTORCRAFT_REF="${VECTORCRAFT_REF:-8bc65329286dc1b84aa392997bb205613c3e96cb}"
 SRC="${1:-$APP_DIR/build/vectorcraft}"
 PATCH="$APP_DIR/patches/vectorcraft-nextcloud.patch"
 OUT="$APP_DIR/web"
