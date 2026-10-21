@@ -1,9 +1,9 @@
 diff --git a/apps/vectorcraft-web/Cargo.toml b/apps/vectorcraft-web/Cargo.toml
-index 2e9218dc..c8f14778 100644
+index 211bfdb1..81139900 100644
 --- a/apps/vectorcraft-web/Cargo.toml
 +++ b/apps/vectorcraft-web/Cargo.toml
-@@ -28,4 +28,4 @@ rfd = { workspace = true }
- wasm-bindgen = "0.2"
+@@ -29,4 +29,4 @@ wasm-bindgen = "0.2"
+ serde_json = { workspace = true }
  wasm-bindgen-futures = "0.4"
  js-sys = "0.3"
 -web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlIFrameElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "ClipboardEvent", "DataTransfer", "File", "FileList", "Url", "Location", "CssStyleDeclaration", "Event", "EventTarget", "MouseEvent", "PointerEvent", "TouchEvent", "AddEventListenerOptions", "DomRect", "DragEvent", "Storage", "Navigator", "RequestInit", "Response", "AbortController", "AbortSignal"] }
@@ -160,10 +160,10 @@ index 00000000..6f4765dc
 +    }
 +}
 diff --git a/apps/vectorcraft-web/src/main.rs b/apps/vectorcraft-web/src/main.rs
-index 32cd1078..0b978eb0 100644
+index f76e5478..1a5ed306 100644
 --- a/apps/vectorcraft-web/src/main.rs
 +++ b/apps/vectorcraft-web/src/main.rs
-@@ -14,14 +14,21 @@
+@@ -14,17 +14,24 @@
  //!   hover, palm rejection, fingers navigate once a pen has been seen).
  //!
  //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?lang=es` (any
@@ -174,6 +174,8 @@ index 32cd1078..0b978eb0 100644
 +//! `docs/web-embed.md`).
  
  #[cfg(target_arch = "wasm32")]
+ mod api;
+ #[cfg(target_arch = "wasm32")]
  mod fonts;
  #[cfg(target_arch = "wasm32")]
 +mod host;
@@ -181,11 +183,12 @@ index 32cd1078..0b978eb0 100644
  mod locks;
  #[cfg(any(target_arch = "wasm32", test))]
  mod pencil;
-+#[cfg(any(target_arch = "wasm32", test))]
+ #[cfg(any(target_arch = "wasm32", test))]
 +mod protocol;
++#[cfg(any(target_arch = "wasm32", test))]
+ mod saved_files;
  #[cfg(target_arch = "wasm32")]
  mod web;
- 
 diff --git a/apps/vectorcraft-web/src/protocol.rs b/apps/vectorcraft-web/src/protocol.rs
 new file mode 100644
 index 00000000..23fc872d
@@ -311,7 +314,7 @@ index 00000000..23fc872d
 +    }
 +}
 diff --git a/apps/vectorcraft-web/src/web.rs b/apps/vectorcraft-web/src/web.rs
-index cfe8458b..634b18eb 100644
+index c3079947..734d3a90 100644
 --- a/apps/vectorcraft-web/src/web.rs
 +++ b/apps/vectorcraft-web/src/web.rs
 @@ -55,6 +55,8 @@ struct Host {
@@ -363,21 +366,17 @@ index cfe8458b..634b18eb 100644
                  let app = match taken.borrow_mut().take() {
                      Some(mut app) => {
                          // The old services asked the old context for frames.
-@@ -124,7 +141,12 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
-                         app.status("The graphics were lost and have been restarted");
-                         app
-                     }
--                    None => VectorcraftApp::new(Session::new(), services),
-+                    None => {
+@@ -132,6 +149,9 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
+                         if let Err(e) = crate::api::install() {
+                             log::error!("vectorcraft-web: couldn't install window.vectorcraft: {}", js_err(e));
+                         }
 +                        if let Some(bridge) = &host.bridge {
 +                            bridge.post_ready();
 +                        }
-+                        VectorcraftApp::new(Session::new(), services)
-+                    }
+                         VectorcraftApp::new(Session::new(), services).with_control(control_rx)
+                     }
                  };
-                 Ok(Box::new(WebShell { app: Some(app), host, canvas: page, loss }))
-             }),
-@@ -139,7 +161,13 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
+@@ -148,7 +168,13 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
                  el.remove();
              }
          }
@@ -392,7 +391,7 @@ index cfe8458b..634b18eb 100644
          (Err(e), Some(kept)) => {
              log::error!("vectorcraft-web: couldn't restart the graphics: {}", js_err(e));
              give_up(slot.borrow_mut().take(), kept);
-@@ -398,6 +426,9 @@ impl eframe::App for WebShell {
+@@ -408,6 +434,9 @@ impl eframe::App for WebShell {
      fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
          if let Some(app) = &mut self.app {
              app.ui(ui);
@@ -400,13 +399,13 @@ index cfe8458b..634b18eb 100644
 +                bridge.report_dirty(app);
 +            }
          }
+         crate::api::poll_replies();
      }
- }
 diff --git a/docs/development.md b/docs/development.md
-index b7c14b39..4ffefa53 100644
+index 983493ff..5de2b381 100644
 --- a/docs/development.md
 +++ b/docs/development.md
-@@ -24,7 +24,7 @@ craft-fonts checkout adds the fonts the site serves beside the wasm: Trunk's `po
+@@ -25,7 +25,7 @@ craft-fonts checkout adds the fonts the site serves beside the wasm: Trunk's `po
  
  Any static file server works for `dist/web`, for example `python3 -m http.server 8766` inside that directory. The release `.wasm` is about 17.5 MB, or 7.1 MB gzipped, so serve it with compression.
  
